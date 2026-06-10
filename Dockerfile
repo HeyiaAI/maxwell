@@ -20,7 +20,10 @@ RUN cd /workspace \
     && echo "$MAXWELL_VERSION" > /REVISION
 
 # Build clean image with non-root priveledge
-FROM openjdk:23-jdk-slim
+# HEY.IA PATCH PP226: openjdk:23-jdk-slim foi descontinuado do Docker Hub
+# (Adoptium/Eclipse Temurin substituiu as imagens openjdk oficiais).
+# eclipse-temurin:23-jdk e o substituto direto, mantido pela Eclipse Foundation.
+FROM eclipse-temurin:23-jdk
 
 RUN apt-get update \
     && apt-get -y upgrade
@@ -33,9 +36,11 @@ COPY --from=builder /REVISION /REVISION
 
 WORKDIR /app
 
-RUN useradd -u 1000 maxwell -d /app
-RUN chown 1000:1000 /app
+# HEY.IA PATCH PP226: eclipse-temurin:23-jdk ja vem com user UID=1000.
+# Criamos um UID livre (1099) pra Maxwell.
+RUN useradd -u 1099 maxwell -d /app
+RUN chown 1099:1099 /app
 
-USER 1000
+USER 1099
 
 CMD [ "/bin/bash", "-c", "bin/maxwell-docker" ]

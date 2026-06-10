@@ -18,7 +18,14 @@ import com.zendesk.maxwell.schema.columndef.StringColumnDef;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+// HEY.IA PATCH PP226 — import slf4j pra logar PK invalida sem matar processo.
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class Table {
+	// HEY.IA PATCH PP226 — logger pra warn de schema sujo.
+	private static final Logger LOGGER = LoggerFactory.getLogger(Table.class);
+
 	public String database;
 	@JsonProperty("table")
 	public String name;
@@ -356,8 +363,58 @@ public class Table {
 			for (String name : pkColumnNames) {
 				ColumnDef cd = findColumn(name);
 
-				if ( cd == null )
-					throw new RuntimeException("Couldn't find column for primary-key: " + name);
+				// ┌──────────────────────────────────────────────────────────────────┐
+				// │  HEY.IA PATCH — fork heyiaa/maxwell:1.44.0-tolerante              │
+				// │  Aplicado em 2026-06-10 por Luciana (Hey.IA).                    │
+				// │  Cravado no Radar como PP226.                                     │
+				// │                                                                   │
+				// │  POR QUE PATCHAMOS                                                │
+				// │  O Maxwell oficial faz `throw new RuntimeException` aqui quando  │
+				// │  a tabela tem PRIMARY KEY declarada em information_schema.       │
+				// │  STATISTICS apontando para uma coluna que NAO EXISTE em          │
+				// │  information_schema.COLUMNS. O processo inteiro morre,           │
+				// │  Docker reinicia, e Maxwell entra em loop de restart.            │
+				// │                                                                   │
+				// │  CENARIO REAL: cliente nosso (Pedro Pelanda, banco               │
+				// │  posto_pelanda22) mora num MySQL Mysoft com outros tenants       │
+				// │  (ass_dinossauro). Esses outros tenants tem tabelas com          │
+				// │  schema sujo — PK aponta pra coluna `idt` mas a coluna nao       │
+				// │  existe (svg_201810..svg_2026XX, series mensais). Maxwell        │
+				// │  parseia o binlog do servidor inteiro (limitacao do produto)    │
+				// │  e crasha mesmo com filter `exclude:*.*` defensivo (PP219).      │
+				// │                                                                   │
+				// │  Sem este patch, ficariamos refens do prazo da Mysoft pra        │
+				// │  arrumar o schema dos outros tenants — eles podem demorar        │
+				// │  2 dias ou 3 meses. Independencia operacional > dependencia.    │
+				// │                                                                   │
+				// │  O QUE O PATCH FAZ                                                │
+				// │  Em vez de matar o processo, loga warn + pula a coluna problem-  │
+				// │  atica. O evento daquela tabela ainda chega, so com a lista de   │
+				// │  PK incompleta — e como nosso filter ja descarta eventos fora    │
+				// │  do whitelist, isso e inocuo pra nossa replicacao.               │
+				// │                                                                   │
+				// │  TRADE-OFFS                                                       │
+				// │  - Se uma das NOSSAS tabelas tiver schema sujo um dia, Maxwell   │
+				// │    nao vai mais crashar — vai publicar evento com PK              │
+				// │    incompleta. Detectar isso fica por conta de testes de         │
+				// │    integridade na materializacao (ClickHouse).                    │
+				// │  - Toda vez que atualizar pra Maxwell v1.45+ precisa re-aplicar  │
+				// │    este patch. Custo conhecido e aceito.                         │
+				// │                                                                   │
+				// │  ALTERNATIVAS DESCARTADAS                                         │
+				// │  - Esperar Mysoft (depende de terceiro, prazo incerto)            │
+				// │  - Trocar pra Debezium (5-7 dias de refactor, requer Kafka       │
+				// │    Connect, 5.6 nao e oficialmente suportado)                     │
+				// │  - Fork do AWS DMS / Flink CDC / Canal: idem ou pior              │
+				// │                                                                   │
+				// │  Detalhes completos: PP226 no Radar admin.                        │
+				// └──────────────────────────────────────────────────────────────────┘
+				if ( cd == null ) {
+					LOGGER.warn("[hey.ia patch PP226] PK aponta pra coluna inexistente: "
+							+ "tabela=" + this.database + "." + this.name + ", coluna=" + name
+							+ " — evento ignorado, replicacao prossegue.");
+					continue;
+				}
 
 				this.normalizedPKColumnNames.add(cd.getName());
 			}
