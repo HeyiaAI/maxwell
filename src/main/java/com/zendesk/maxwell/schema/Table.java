@@ -294,8 +294,50 @@ public class Table {
 		ColumnDef def = columns.remove(idx);
 		int newIndex = position.index(this, idx);
 
-		if ( newIndex == ColumnPosition.AFTER_NOT_FOUND)
-			throw new InvalidSchemaError("Couldn't find column " + position.afterColumn + " to place after");
+		// ┌──────────────────────────────────────────────────────────────────┐
+		// │  HEY.IA PATCH — fork heyiaa/maxwell:1.44.1-tolerante (PP229)     │
+		// │  Aplicado em 2026-06-11 por Luciana (Hey.IA).                    │
+		// │  Cravado no Radar como PP229.                                     │
+		// │                                                                   │
+		// │  POR QUE PATCHAMOS                                                │
+		// │  O Maxwell oficial faz `throw InvalidSchemaError` aqui quando    │
+		// │  encontra um `ALTER TABLE ... MODIFY ... AFTER <coluna>` em      │
+		// │  que <coluna> nao existe no schema cache. Caso real do cliente   │
+		// │  Pelanda (Mysoft, MySQL 5.6.46): binlog 414 posicao 410890151   │
+		// │  traz ALTER referenciando coluna `current_status` ja removida.  │
+		// │  Maxwell explode, container reinicia (2181x medido 2026-06-11), │
+		// │  replicacao live fica completamente parada.                      │
+		// │                                                                   │
+		// │  POR QUE EH SEGURO TRATAR                                         │
+		// │  1. O metodo IRMAO `changeColumn` (linha ~275) JA TRATA o mesmo  │
+		// │     AFTER_NOT_FOUND graciosamente — enfileira em `deferred` e   │
+		// │     posiciona em `index=0`. Inconsistencia clara do upstream    │
+		// │     entre os dois caminhos.                                       │
+		// │  2. Aqui em `moveColumn` ja estamos no segundo passo (drenando  │
+		// │     `deferred` do TableAlter.resolve linha 56). Se nem agora a  │
+		// │     coluna apareceu, ela simplesmente nao existe nesse estado   │
+		// │     do schema — nao adianta enfileirar de novo.                  │
+		// │  3. Posicao da coluna NAO afeta correcao do dado downstream:    │
+		// │     o MV do ClickHouse usa JSONExtract por NOME, nao por indice.│
+		// │     Posicionar em index=0 eh inocuo pro pipeline.                │
+		// │                                                                   │
+		// │  EFEITO                                                           │
+		// │  Em vez de matar o processo, loga linha estilo:                  │
+		// │    [hey.ia patch PP229] AFTER aponta pra coluna inexistente:    │
+		// │    tabela=X.Y, coluna_movida=A, after=B — posicionada no inicio,│
+		// │    replicacao prossegue.                                          │
+		// │  Replicacao das outras tabelas e desse evento segue normal.      │
+		// └──────────────────────────────────────────────────────────────────┘
+		if ( newIndex == ColumnPosition.AFTER_NOT_FOUND ) {
+			LOGGER.warn(
+				"[hey.ia patch PP229] AFTER aponta pra coluna inexistente: " +
+				"tabela=" + this.database + "." + this.name +
+				", coluna_movida=" + name +
+				", after=" + position.afterColumn +
+				" — posicionada no inicio, replicacao prossegue."
+			);
+			newIndex = 0;
+		}
 
 		columns.add(newIndex, def);
 	}
